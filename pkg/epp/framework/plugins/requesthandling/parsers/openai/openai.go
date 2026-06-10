@@ -48,7 +48,6 @@ const (
 	// to account for optional parameters like "; charset=utf-8" often appended by proxies.
 	eventStreamType = "text/event-stream"
 
-	usageField               = "usage"
 	promptTokensField        = "prompt_tokens"
 	inputTokensField         = "input_tokens"
 	completionTokensField    = "completion_tokens"
@@ -259,19 +258,8 @@ func toInt(v any) int {
 	return 0
 }
 
-func extractUsage(responseBytes []byte) (*fwkrh.Usage, error) {
-	var responseErr error
-	var responseBody map[string]any
-	responseErr = json.Unmarshal(responseBytes, &responseBody)
-	if responseErr != nil {
-		return nil, responseErr
-	}
-	usg, ok := responseBody[usageField].(map[string]any)
-	if !ok {
-		return nil, nil //nolint:nilnil
-	}
-
-	usage := fwkrh.Usage{}
+func parseUsageMap(usg map[string]any) *fwkrh.Usage {
+	usage := &fwkrh.Usage{}
 
 	// Chat/Completions APIs use prompt_tokens. Responses/Conversations APIs use input_tokens.
 	for _, inputTokens := range []string{promptTokensField, inputTokensField} {
@@ -305,7 +293,19 @@ func extractUsage(responseBytes []byte) (*fwkrh.Usage, error) {
 		usage.TotalTokens = toInt(v)
 	}
 
-	return &usage, nil
+	return usage
+}
+
+func extractUsage(responseBytes []byte) (*fwkrh.Usage, error) {
+	var responseBody map[string]any
+	if err := json.Unmarshal(responseBytes, &responseBody); err != nil {
+		return nil, err
+	}
+	usg, ok := responseBody["usage"].(map[string]any)
+	if !ok {
+		return nil, nil //nolint:nilnil
+	}
+	return parseUsageMap(usg), nil
 }
 
 // Example message if "stream_options": {"include_usage": "true"} is included in the request:
@@ -329,10 +329,9 @@ func extractUsage(responseBytes []byte) (*fwkrh.Usage, error) {
 func extractUsageStreaming(responseText string) *fwkrh.Usage {
 
 	var streamResponse struct {
-		Usage    *fwkrh.Usage `json:"usage"`
+		Usage    map[string]any `json:"usage"`
 		Response struct {
-			Usage  map[string]any `json:"usage"`
-			Object string         `json:"object"`
+			Usage map[string]any `json:"usage"`
 		} `json:"response"`
 		Type string `json:"type"`
 	}
@@ -353,18 +352,11 @@ func extractUsageStreaming(responseText string) *fwkrh.Usage {
 		}
 		// Standard ChatCompletion / vLLM usage format
 		if streamResponse.Usage != nil {
-			return streamResponse.Usage
+			return parseUsageMap(streamResponse.Usage)
 		}
 		// Responses API streaming format
 		if streamResponse.Response.Usage != nil && streamResponse.Type == "response.completed" {
-			// Convert map[string]any to JSON and parse
-			jsonBytes, _ := json.Marshal(map[string]any{
-				"usage":  streamResponse.Response.Usage,
-				"object": streamResponse.Response.Object,
-			})
-			if usage, err := extractUsage(jsonBytes); err == nil && usage != nil {
-				return usage
-			}
+			return parseUsageMap(streamResponse.Response.Usage)
 		}
 	}
 	return nil
